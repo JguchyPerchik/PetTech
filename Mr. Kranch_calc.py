@@ -4,8 +4,8 @@ from IPython.display import display
 # --- Правила формирования блоков ---
 block_rules = {
     "Discovery": {"toys": 25, "bowls": 15},
-    "Happy Launch": {"toys": 40, "bowls": 0},
-    "Play": {"toys": 20, "bowls": 0},
+    "Happy Launch": {"toys": 20, "bowls": 0},
+    "Play": {"toys": 40, "bowls": 0},
 }
 
 # --- Валидация входных данных ---
@@ -61,24 +61,47 @@ def assemble_block(order_df, used_ids, included_rows, needed_toys, needed_bowls)
 
     return k
 
+# --- Новая функция для жадной сборки всех возможных блоков ---
+def get_all_brand_blocks(order_df):
+    global_used_ids = set()
+    final_blocks_counts = {name: 0 for name in block_rules.keys()}
+    all_included_rows = []
+
+    while True:
+        blocks_formed_in_this_iteration = False
+
+        for block_name, rules in block_rules.items():
+            # Create a temporary list for items included in the current block formation attempt
+            included_rows_for_block_attempt = []
+            
+            # Create a copy of used_ids for this specific block attempt
+            temp_used_ids_for_block_attempt = set(global_used_ids)
+
+            k_value = assemble_block(
+                order_df,
+                temp_used_ids_for_block_attempt,
+                included_rows_for_block_attempt,
+                needed_toys=rules["toys"],
+                needed_bowls=rules["bowls"]
+            )
+
+            if k_value > 0:
+                final_blocks_counts[block_name] += k_value
+                # Update the global_used_ids and all_included_rows after a successful block formation
+                global_used_ids.update(temp_used_ids_for_block_attempt)
+                all_included_rows.extend(included_rows_for_block_attempt)
+                blocks_formed_in_this_iteration = True
+        
+        if not blocks_formed_in_this_iteration:
+            break
+    
+    return pd.Series({**final_blocks_counts, 'included_idx': list(set(all_included_rows))})
+
 
 # --- Основная функция подсчёта блоков ---
 def count_brand_blocks(order_df):
-    order_df = order_df.sort_values(by='Price', ascending=False)
-    used_ids = set()
-    included_rows = []
-    blocks = {}
-
-    for block_name, rules in block_rules.items():
-        blocks[block_name] = assemble_block(
-            order_df,
-            used_ids,
-            included_rows,
-            needed_toys=rules["toys"],
-            needed_bowls=rules["bowls"]
-        )
-
-    return pd.Series({**blocks, 'included_idx': included_rows})
+    # This function now simply calls the greedy block maximization function
+    return get_all_brand_blocks(order_df)
 
 
 # --- Основной pipeline ---
