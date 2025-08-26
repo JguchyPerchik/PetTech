@@ -162,15 +162,15 @@ def get_all_brand_blocks(order_df):
             total_blocks_in_this_path = sum(current_blocks_count_map.values())
             logging.debug(f"Базовый случай на глубине {depth}. Оценка комбинации: блоки={total_blocks_in_this_path}, прибыль={current_profit:.2f}")
             if current_profit > best_total_profit:
-                if best_total_profit>0:
+                if best_total_profit > 0:
                     logging.info(f"Найдено лучшее решение по прибыли: {current_profit:.2f} (ранее {best_total_profit:.2f}). Блоков: {total_blocks_in_this_path}.")
                 best_total_profit = current_profit
                 best_total_blocks = total_blocks_in_this_path
                 best_overall_selected_items = list(current_selected_items_details)
                 best_overall_blocks_counts = current_blocks_count_map.copy()
             elif current_profit == best_total_profit:
-                if total_blocks_in_this_path > best_total_blocks:
-                    logging.info(f"Найдено лучшее решение по количеству блоков при той же прибыли: {total_blocks_in_this_path} (ранее {best_total_blocks}). Прибыль: {current_profit:.2f}.")
+                if total_blocks_in_this_path < best_total_blocks:
+                    logging.info(f"Найдено лучшее решение по меньшему количеству блоков при той же прибыли: {total_blocks_in_this_path} (ранее {best_total_blocks}). Прибыль: {current_profit:.2f}.")
                     best_total_blocks = total_blocks_in_this_path
                     best_overall_selected_items = list(current_selected_items_details)
                     best_overall_blocks_counts = current_blocks_count_map.copy()
