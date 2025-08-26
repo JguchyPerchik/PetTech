@@ -23,93 +23,178 @@ def validate_dataframe(df: pd.DataFrame):
         raise TypeError("Колонка 'Price' должна быть числовой")
 
 
-# --- Функция для сборки конкретного блока ---
-def assemble_block(order_df, used_ids, included_rows, needed_toys, needed_bowls):
-    toys = order_df[(order_df['Category'] == 'Игрушки') & (~order_df['Nomenclature_ID'].isin(used_ids))]
-    bowls = order_df[(order_df['Category'] == 'Миски') & (~order_df['Nomenclature_ID'].isin(used_ids))]
+# --- Функция для поиска оптимального набора блока ---
+def find_block_set_details(current_inventory_df, needed_toys, needed_bowls):
+    # Эта функция находит оптимальное "k" (минимальное количество единиц на SKU для блока)
+    # и конкретные уникальные SKU для *одного* набора блоков, с приоритетом по количеству, затем по прибыли.
+    # Она возвращает k_value, selected_skus_details (список словарей), total_profit_for_k
 
-    toys_qty = toys['Nomenclature_ID'].nunique()
-    bowls_qty = bowls['Nomenclature_ID'].nunique()
+    current_eligible_toys = current_inventory_df[(current_inventory_df['Category'] == 'Игрушки') & (current_inventory_df['remaining_quantity'] > 0)]
+    current_eligible_bowls = current_inventory_df[(current_inventory_df['Category'] == 'Миски') & (current_inventory_df['remaining_quantity'] > 0)]
 
-    # сколько блоков можно собрать
+    max_qty_toys = current_eligible_toys['remaining_quantity'].max() if not current_eligible_toys.empty else 0
+    max_qty_bowls = current_eligible_bowls['remaining_quantity'].max() if not current_eligible_bowls.empty else 0
+
+    max_k_possible = 0
     if needed_toys > 0 and needed_bowls > 0:
-        k = min(toys_qty // needed_toys, bowls_qty // needed_bowls)
+        max_k_possible = min(max_qty_toys, max_qty_bowls) if (max_qty_toys > 0 and max_qty_bowls > 0) else 0
+    elif needed_toys > 0:
+        max_k_possible = max_qty_toys
+    elif needed_bowls > 0:
+        max_k_possible = max_qty_bowls
     else:
-        k = toys_qty // needed_toys if needed_toys > 0 else 0
+        return 0, [], 0.0
 
-    if k > 0:
-        toys_needed_total = k * needed_toys
-        bowls_needed_total = k * needed_bowls
+    best_k_found = 0
+    best_selected_skus_details = []
+    max_profit_for_best_k = 0.0
 
+    for candidate_k in range(int(max_k_possible), 0, -1):
+        temp_eligible_toys = current_eligible_toys[current_eligible_toys['remaining_quantity'] >= candidate_k]
+        temp_eligible_bowls = current_eligible_bowls[current_eligible_bowls['remaining_quantity'] >= candidate_k]
+
+        current_selected_skus = []
+        current_profit = 0.0
+        
+        # Попытка выбрать игрушки
         if needed_toys > 0:
-            for idx, row in toys.iterrows():
-                if toys_needed_total <= 0:
-                    break
-                take_qty = min(row['Quantity'], toys_needed_total)
-                toys_needed_total -= take_qty
-                included_rows.append(idx)
-                used_ids.add(row['Nomenclature_ID'])
-
-        if needed_bowls > 0:
-            for idx, row in bowls.iterrows():
-                if bowls_needed_total <= 0:
-                    break
-                take_qty = min(row['Quantity'], bowls_needed_total)
-                bowls_needed_total -= take_qty
-                included_rows.append(idx)
-                used_ids.add(row['Nomenclature_ID'])
-
-    return k
-
-# --- Новая функция для жадной сборки всех возможных блоков ---
-def get_all_brand_blocks(order_df):
-    global_used_ids = set()
-    final_blocks_counts = {name: 0 for name in block_rules.keys()}
-    all_included_rows = []
-
-    while True:
-        blocks_formed_in_this_iteration = False
-
-        for block_name, rules in block_rules.items():
-            # Create a temporary list for items included in the current block formation attempt
-            included_rows_for_block_attempt = []
+            if temp_eligible_toys['Nomenclature_ID'].nunique() < needed_toys:
+                continue # Недостаточно уникальных игрушек для данного k
             
-            # Create a copy of used_ids for this specific block attempt
-            temp_used_ids_for_block_attempt = set(global_used_ids)
+            # Выберите 'needed_toys' уникальных SKU, отдавая приоритет оставшемуся количеству, затем цене
+            toys_to_consider = temp_eligible_toys.sort_values(by=['remaining_quantity', 'Price'], ascending=[False, False])
+            selected_toys = toys_to_consider.drop_duplicates(subset=['Nomenclature_ID']).head(needed_toys)
+            
+            if len(selected_toys) < needed_toys:
+                continue # Все еще недостаточно уникальных игрушек
 
-            k_value = assemble_block(
-                order_df,
-                temp_used_ids_for_block_attempt,
-                included_rows_for_block_attempt,
-                needed_toys=rules["toys"],
-                needed_bowls=rules["bowls"]
-            )
+            for _, row in selected_toys.iterrows():
+                current_selected_skus.append({
+                    'original_index': row['original_index'],
+                    'Nomenclature_ID': row['Nomenclature_ID'],
+                    'Price': row['Price']
+                })
+                current_profit += row['Price'] * candidate_k
+
+        # Попытка выбрать миски, убедившись, что нет совпадений Nomenclature_ID с выбранными игрушками
+        if needed_bowls > 0:
+            if temp_eligible_bowls['Nomenclature_ID'].nunique() < needed_bowls:
+                continue # Недостаточно уникальных мисок для данного k
+
+            bowls_to_consider = temp_eligible_bowls[~temp_eligible_bowls['Nomenclature_ID'].isin([s['Nomenclature_ID'] for s in current_selected_skus])] \
+                                .sort_values(by=['remaining_quantity', 'Price'], ascending=[False, False])
+            selected_bowls = bowls_to_consider.drop_duplicates(subset=['Nomenclature_ID']).head(needed_bowls)
+
+            if len(selected_bowls) < needed_bowls:
+                continue # Все еще недостаточно уникальных мисок
+
+            for _, row in selected_bowls.iterrows():
+                current_selected_skus.append({
+                    'original_index': row['original_index'],
+                    'Nomenclature_ID': row['Nomenclature_ID'],
+                    'Price': row['Price']
+                })
+                current_profit += row['Price'] * candidate_k
+        
+        # Если мы дошли сюда, значит, мы нашли действительный набор SKU для 'candidate_k'
+        # Поскольку мы итерируем 'candidate_k' в обратном порядке, первое действительное 'k' является лучшим 'k'.
+        best_k_found = candidate_k
+        best_selected_skus_details = current_selected_skus
+        max_profit_for_best_k = current_profit
+        break
+
+    return best_k_found, best_selected_skus_details, max_profit_for_best_k
+
+
+# --- Функция для жадной сборки всех возможных блоков ---
+def get_all_brand_blocks(order_df):
+    # Инициализация инвентаря с оставшимся количеством
+    initial_inventory = order_df.copy()
+    if 'original_index' not in initial_inventory.columns:
+        initial_inventory = initial_inventory.reset_index().rename(columns={'index': 'original_index'})
+    initial_inventory['remaining_quantity'] = initial_inventory['Quantity']
+
+    # Переменные для глобального отслеживания лучшего решения
+    best_total_blocks = 0
+    best_total_profit = -1.0  # Инициализация значением, которое любой действительный доход превысит
+    best_overall_selected_items = []
+    best_overall_blocks_counts = {name: 0 for name in block_rules.keys()}
+
+    # Рекурсивная вспомогательная функция для поиска наилучшей комбинации блоков
+    def _find_best_combination(current_inventory_df, current_blocks_count_map, current_profit, current_selected_items_details):
+        nonlocal best_total_blocks, best_total_profit, best_overall_selected_items, best_overall_blocks_counts
+
+        # Базовый случай: нельзя сформировать больше блоков
+        can_form_any_block = False
+        for block_name in block_rules.keys():
+            rules = block_rules[block_name]
+            needed_toys = rules["toys"]
+            needed_bowls = rules["bowls"]
+            k_value, _, _ = find_block_set_details(current_inventory_df, needed_toys, needed_bowls)
+            if k_value > 0:
+                can_form_any_block = True
+                break
+
+        if not can_form_any_block:
+            # Оцените текущую комбинацию: сначала максимизируем прибыль, затем количество блоков
+            total_blocks_in_this_path = sum(current_blocks_count_map.values())
+            if current_profit > best_total_profit:
+                best_total_profit = current_profit
+                best_total_blocks = total_blocks_in_this_path
+                best_overall_selected_items = list(current_selected_items_details)
+                best_overall_blocks_counts = current_blocks_count_map.copy()
+            elif current_profit == best_total_profit:
+                if total_blocks_in_this_path > best_total_blocks:
+                    best_total_blocks = total_blocks_in_this_path
+                    best_overall_selected_items = list(current_selected_items_details)
+                    best_overall_blocks_counts = current_blocks_count_map.copy()
+            return
+
+        # Рекурсивный шаг: попробуйте сформировать каждый возможный тип блока
+        for block_name in block_rules.keys():
+            rules = block_rules[block_name]
+            needed_toys = rules["toys"]
+            needed_bowls = rules["bowls"]
+
+            # Используем find_block_set_details для получения оптимального k и одного набора SKU
+            k_value, selected_skus_details, profit_for_set = find_block_set_details(current_inventory_df, needed_toys, needed_bowls)
 
             if k_value > 0:
-                final_blocks_counts[block_name] += k_value
-                # Update the global_used_ids and all_included_rows after a successful block formation
-                global_used_ids.update(temp_used_ids_for_block_attempt)
-                all_included_rows.extend(included_rows_for_block_attempt)
-                blocks_formed_in_this_iteration = True
-        
-        if not blocks_formed_in_this_iteration:
-            break
-    
-    return pd.Series({**final_blocks_counts, 'included_idx': list(set(all_included_rows))})
+                # Создаем новое состояние инвентаря для следующей итерации рекурсии
+                next_inventory_df = current_inventory_df.copy()
+                for sku_item in selected_skus_details:
+                    next_inventory_df.loc[next_inventory_df['original_index'] == sku_item['original_index'], 'remaining_quantity'] -= k_value
+
+                # Обновляем счетчики блоков и прибыль
+                next_blocks_count_map = current_blocks_count_map.copy()
+                next_blocks_count_map[block_name] += k_value
+
+                next_profit = current_profit + profit_for_set
+                next_selected_items_details = current_selected_items_details + [{'original_index': s['original_index'], 'k_value': k_value} for s in selected_skus_details]
+
+                # Рекурсивный вызов
+                _find_best_combination(next_inventory_df, next_blocks_count_map, next_profit, next_selected_items_details)
+
+    # Запуск рекурсивной функции
+    _find_best_combination(initial_inventory, {name: 0 for name in block_rules.keys()}, 0.0, [])
+
+    return pd.Series({**best_overall_blocks_counts, 'selected_item_details': best_overall_selected_items})
 
 
 # --- Основная функция подсчёта блоков ---
 def count_brand_blocks(order_df):
-    # This function now simply calls the greedy block maximization function
     return get_all_brand_blocks(order_df)
 
 
-# --- Основной pipeline ---
+# --- Основной pipeline---
 def process_file(input_path="src/Mr. Kranch.xlsx", output_path="Mr. Kranch_calc.xlsx"):
     df = pd.read_excel(input_path)
     df.columns = df.columns.str.strip()
 
-    # Нормализация чисел
+    # Добавляем оригинальный индекс для отслеживания перед любыми группировками/операциями
+    df = df.reset_index().rename(columns={'index': 'original_index'})
+
+    # Нормализация числовых данных
     for col in ["Amount", "Price"]:
         df[col] = df[col].astype(str).str.replace(',', '.').astype(float)
 
@@ -117,21 +202,45 @@ def process_file(input_path="src/Mr. Kranch.xlsx", output_path="Mr. Kranch_calc.
 
     writer = pd.ExcelWriter(output_path, engine="xlsxwriter")
 
-    # Подсчёт блоков
+    # Подсчёт блоков для каждого заказа
     order_blocks = df.groupby(['Manager', 'Contract_ID', 'Order']).apply(count_brand_blocks).reset_index()
 
-    included_indices = set()
-    for idx_list in order_blocks['included_idx']:
-        included_indices.update(idx_list)
-
-    df_with_blocks = df.loc[df.index.isin(included_indices)]
+    # Обработка выбранных деталей элементов для расчета Block_Amount и Sales_sum
+    all_block_items_for_cost = []
+    for _, row in order_blocks.iterrows():
+        for item_data in row['selected_item_details']:
+            all_block_items_for_cost.append({
+                'Manager': row['Manager'],
+                'Contract_ID': row['Contract_ID'],
+                'Order': row['Order'],
+                'original_index': item_data['original_index'],
+                'k_value': item_data['k_value']
+            })
+    
+    if not all_block_items_for_cost:
+        df_calculated_items = pd.DataFrame()
+    else:
+        df_calculated_items = pd.DataFrame(all_block_items_for_cost)
+        df_calculated_items = pd.merge(
+            df_calculated_items,
+            df[['Price', 'Nomenclature_ID']].reset_index().rename(columns={'index': 'original_index'}),
+            on='original_index',
+            how='left'
+        )
+        df_calculated_items['Block_Amount'] = df_calculated_items['Price'] * df_calculated_items['k_value']
+    
+    # Используем df_calculated_items для Sales_sum и df_with_blocks для Contracts_with_blocks
+    included_indices_for_contracts = df_calculated_items['original_index'].unique() if not df_calculated_items.empty else []
+    df_with_blocks = df.loc[df.index.isin(included_indices_for_contracts)]
 
     order_blocks["Total_blocks"] = order_blocks[list(block_rules.keys())].sum(axis=1)
 
-    summary = df_with_blocks.groupby("Manager").agg(
-        Contracts_with_blocks=("Contract_ID", "nunique"),
-        Sales_sum=("Amount", "sum")
+    summary = df_calculated_items.groupby("Manager").agg(
+        Sales_sum=("Block_Amount", "sum")
     ).reset_index()
+
+    summary_contracts = df_with_blocks.groupby("Manager")["Contract_ID"].nunique().reset_index(name="Contracts_with_blocks")
+    summary = summary.merge(summary_contracts, on="Manager", how="left").fillna(0) # Заполняем NaN для менеджеров без блоков
 
     blocks_summary = order_blocks.groupby("Manager")["Total_blocks"].sum().reset_index()
     summary = summary.merge(blocks_summary, on="Manager", how="left")
@@ -157,6 +266,6 @@ def make_ranking(summary):
     return ranking.reset_index(drop=True)
 
 
-# --- Запуск ---
+# --- Запуск выполнения ---
 if __name__ == "__main__":
     process_file()
