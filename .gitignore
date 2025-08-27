@@ -1,0 +1,49 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+.venv/
+env/
+venv/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# VSCode settings
+.vscode/
+
+# PyCharm settings
+.idea/
+
+# MacOS system files
+.DS_Store
+
+# Excel files — исключаем только результаты расчетов
+*_calc.xlsx
+
+# CSV/TSV
+*.csv
+*.tsv
+
+# Logs
+*.log
+
+# Cache
+*.cache
+*.mypy_cache/
+*.pytest_cache/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+
+# Environment variables
+.env
+*.env
+
+# Temp files
+tmp/
+*.tmp
