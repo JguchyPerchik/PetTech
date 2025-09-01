@@ -7,9 +7,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # --- Правила формирования блоков ---
 block_rules = {
+    "Play": {"toys": 40, "bowls": 0},
     "Discovery": {"toys": 25, "bowls": 15},
     "Happy Launch": {"toys": 20, "bowls": 0},
-    "Play": {"toys": 40, "bowls": 0},
+
 }
 
 # --- Валидация входных данных ---
@@ -34,96 +35,63 @@ def validate_dataframe(df: pd.DataFrame):
 
 # --- Функция для поиска оптимального набора блока ---
 def find_block_set_details(current_inventory_df, needed_toys, needed_bowls):
-    # Эта функция находит оптимальное "k" (минимальное количество единиц на SKU для блока)
-    # и конкретные уникальные SKU для *одного* набора блоков, с приоритетом по количеству, затем по прибыли.
-    # Она возвращает k_value, selected_skus_details (список словарей), total_profit_for_k
+    # Эта функция находит набор уникальных SKU для *одного* блока,
+    # с приоритетом по максимальной прибыли.
+    # Она возвращает k_value (всегда 1), selected_skus_details (список словарей), total_profit_for_set
 
     current_eligible_toys = current_inventory_df[(current_inventory_df['Category'] == 'Игрушки') & (current_inventory_df['remaining_quantity'] > 0)]
     current_eligible_bowls = current_inventory_df[(current_inventory_df['Category'] == 'Миски') & (current_inventory_df['remaining_quantity'] > 0)]
 
-    max_qty_toys = current_eligible_toys['remaining_quantity'].max() if not current_eligible_toys.empty else 0
-    max_qty_bowls = current_eligible_bowls['remaining_quantity'].max() if not current_eligible_bowls.empty else 0
+    selected_skus = []
+    profit_for_set = 0.0
+    k_value = 1 # Всегда 1, так как мы выделяем блоки строго по Nomenclature_ID, не учитывая Quantity
 
-    max_k_possible = 0
-    if needed_toys > 0 and needed_bowls > 0:
-        max_k_possible = min(max_qty_toys, max_qty_bowls) if (max_qty_toys > 0 and max_qty_bowls > 0) else 0
-    elif needed_toys > 0:
-        max_k_possible = max_qty_toys
-    elif needed_bowls > 0:
-        max_k_possible = max_qty_bowls
-    else:
-        logging.debug("Для данного блока не требуются игрушки или миски, возвращаем 0, [], 0.0.")
-        return 0, [], 0.0
-
-    best_k_found = 0
-    best_selected_skus_details = []
-    max_profit_for_best_k = 0.0
-
-    for candidate_k in range(int(max_k_possible), 0, -1):
-        logging.debug(f"Попытка с candidate_k: {candidate_k}")
-        temp_eligible_toys = current_eligible_toys[current_eligible_toys['remaining_quantity'] >= candidate_k]
-        temp_eligible_bowls = current_eligible_bowls[current_eligible_bowls['remaining_quantity'] >= candidate_k]
-
-        current_selected_skus = []
-        current_profit = 0.0
+    # Попытка выбрать игрушки
+    if needed_toys > 0:
+        if current_eligible_toys['Nomenclature_ID'].nunique() < needed_toys:
+            logging.debug(f"Недостаточно уникальных игрушек для блока. Требуется: {needed_toys}, Доступно: {current_eligible_toys['Nomenclature_ID'].nunique()}")
+            return 0, [], 0.0 # Невозможно сформировать блок
         
-        # Попытка выбрать игрушки
-        if needed_toys > 0:
-            if temp_eligible_toys['Nomenclature_ID'].nunique() < needed_toys:
-                logging.debug(f"Недостаточно уникальных игрушек для candidate_k {candidate_k}. Продолжаем.")
-                continue # Недостаточно уникальных игрушек для данного k
-            
-            # Выберите 'needed_toys' уникальных SKU, отдавая приоритет оставшемуся количеству, затем цене
-            toys_to_consider = temp_eligible_toys.sort_values(by=['remaining_quantity', 'Price'], ascending=[False, False])
-            selected_toys = toys_to_consider.drop_duplicates(subset=['Nomenclature_ID']).head(needed_toys)
-            
-            if len(selected_toys) < needed_toys:
-                logging.debug(f"Все еще недостаточно уникальных игрушек после выбора для candidate_k {candidate_k}. Продолжаем.")
-                continue # Все еще недостаточно уникальных игрушек
-
-            for _, row in selected_toys.iterrows():
-                current_selected_skus.append({
-                    'original_index': row['original_index'],
-                    'Nomenclature_ID': row['Nomenclature_ID'],
-                    'Price': row['Price']
-                })
-                current_profit += row['Price'] * candidate_k
-
-        # Попытка выбрать миски, убедившись, что нет совпадений Nomenclature_ID с выбранными игрушками
-        if needed_bowls > 0:
-            if temp_eligible_bowls['Nomenclature_ID'].nunique() < needed_bowls:
-                logging.debug(f"Недостаточно уникальных мисок для candidate_k {candidate_k}. Продолжаем.")
-                continue # Недостаточно уникальных мисок для данного k
-
-            bowls_to_consider = temp_eligible_bowls[~temp_eligible_bowls['Nomenclature_ID'].isin([s['Nomenclature_ID'] for s in current_selected_skus])] \
-                                .sort_values(by=['remaining_quantity', 'Price'], ascending=[False, False])
-            selected_bowls = bowls_to_consider.drop_duplicates(subset=['Nomenclature_ID']).head(needed_bowls)
-
-            if len(selected_bowls) < needed_bowls:
-                logging.debug(f"Все еще недостаточно уникальных мисок после выбора для candidate_k {candidate_k}. Продолжаем.")
-                continue # Все еще недостаточно уникальных мисок
-
-            for _, row in selected_bowls.iterrows():
-                current_selected_skus.append({
-                    'original_index': row['original_index'],
-                    'Nomenclature_ID': row['Nomenclature_ID'],
-                    'Price': row['Price']
-                })
-                current_profit += row['Price'] * candidate_k
+        # Выберите 'needed_toys' уникальных SKU, отдавая приоритет цене
+        toys_to_consider = current_eligible_toys.sort_values(by='Price', ascending=False)
+        selected_toys_df = toys_to_consider.drop_duplicates(subset=['Nomenclature_ID']).head(needed_toys)
         
-        # Если мы дошли сюда, значит, мы нашли действительный набор SKU для 'candidate_k'
-        # Поскольку мы итерируем 'candidate_k' в обратном порядке, первое действительное 'k' является лучшим 'k'.
-        logging.debug(f"Найден действительный набор SKU для candidate_k: {candidate_k}. Прибыль: {current_profit}")
-        best_k_found = candidate_k
-        best_selected_skus_details = current_selected_skus
-        max_profit_for_best_k = current_profit
-        break
+        if len(selected_toys_df) < needed_toys:
+            logging.debug(f"Недостаточно уникальных игрушек после выбора. Требуется: {needed_toys}, Выбрано: {len(selected_toys_df)}")
+            return 0, [], 0.0 # Все еще недостаточно уникальных игрушек
 
-    if best_k_found == 0:
-        logging.debug("Не удалось найти подходящее значение k для формирования блока.")
-    else:
-        logging.debug(f"Оптимальное k найдено: {best_k_found}, с прибылью: {max_profit_for_best_k}")
-    return best_k_found, best_selected_skus_details, max_profit_for_best_k
+        for _, row in selected_toys_df.iterrows():
+            selected_skus.append({
+                'original_index': row['original_index'],
+                'Nomenclature_ID': row['Nomenclature_ID'],
+                'Price': row['Price']
+            })
+            profit_for_set += row['Price'] * k_value # Прибыль рассчитываем по k_value=1
+
+    # Попытка выбрать миски, убедившись, что нет совпадений Nomenclature_ID с выбранными игрушками
+    if needed_bowls > 0:
+        if current_eligible_bowls['Nomenclature_ID'].nunique() < needed_bowls:
+            logging.debug(f"Недостаточно уникальных мисок для блока. Требуется: {needed_bowls}, Доступно: {current_eligible_bowls['Nomenclature_ID'].nunique()}")
+            return 0, [], 0.0 # Невозможно сформировать блок
+
+        bowls_to_consider = current_eligible_bowls[~current_eligible_bowls['Nomenclature_ID'].isin([s['Nomenclature_ID'] for s in selected_skus])] \
+                            .sort_values(by='Price', ascending=False)
+        selected_bowls_df = bowls_to_consider.drop_duplicates(subset=['Nomenclature_ID']).head(needed_bowls)
+
+        if len(selected_bowls_df) < needed_bowls:
+            logging.debug(f"Недостаточно уникальных мисок после выбора. Требуется: {needed_bowls}, Выбрано: {len(selected_bowls_df)}")
+            return 0, [], 0.0 # Все еще недостаточно уникальных мисок
+
+        for _, row in selected_bowls_df.iterrows():
+            selected_skus.append({
+                'original_index': row['original_index'],
+                'Nomenclature_ID': row['Nomenclature_ID'],
+                'Price': row['Price']
+            })
+            profit_for_set += row['Price'] * k_value # Прибыль рассчитываем по k_value=1
+    
+    logging.debug(f"Найден набор SKU для блока. Прибыль: {profit_for_set:.2f}, k_value: {k_value}")
+    return k_value, selected_skus, profit_for_set
 
 
 # --- Функция для жадной сборки всех возможных блоков ---
@@ -198,7 +166,7 @@ def get_all_brand_blocks(order_df):
                 next_blocks_count_map[block_name] += k_value
 
                 next_profit = current_profit + profit_for_set
-                next_selected_items_details = current_selected_items_details + [{'original_index': s['original_index'], 'k_value': k_value} for s in selected_skus_details]
+                next_selected_items_details = current_selected_items_details + [{'original_index': s['original_index'], 'k_value': k_value, 'block_type': block_name} for s in selected_skus_details]
 
                 # Рекурсивный вызов
                 _find_best_combination(next_inventory_df, next_blocks_count_map, next_profit, next_selected_items_details, depth + 1)
@@ -243,11 +211,13 @@ def process_file(input_path="src/Mr. Kranch.xlsx", output_path="Mr. Kranch_calc.
                 'Contract_ID': row['Contract_ID'],
                 'Order': row['Order'],
                 'original_index': item_data['original_index'],
-                'k_value': item_data['k_value']
+                'k_value': item_data['k_value'],
+                'block_type': item_data['block_type']
             })
     
     if not all_block_items_for_cost:
         df_calculated_items = pd.DataFrame()
+        logging.warning("Не найдено элементов для расчета Block_Amount и Sales_sum.")
     else:
         df_calculated_items = pd.DataFrame(all_block_items_for_cost)
         df_calculated_items = pd.merge(
@@ -257,7 +227,10 @@ def process_file(input_path="src/Mr. Kranch.xlsx", output_path="Mr. Kranch_calc.
             how='left'
         )
         df_calculated_items['Block_Amount'] = df_calculated_items['Price'] * df_calculated_items['k_value']
-    
+    logging.debug("Block_Amount рассчитан.")
+
+    # Создаем DataFrame для нового листа с деталями бренд-блоков
+
     # Используем df_calculated_items для Sales_sum и df_with_blocks для Contracts_with_blocks
     included_indices_for_contracts = df_calculated_items['original_index'].unique() if not df_calculated_items.empty else []
     df_with_blocks = df.loc[df.index.isin(included_indices_for_contracts)]
